@@ -1,0 +1,2 @@
+- [ ] Update lib/store.ts: Change initial train status from "RUNNING" to "MOVING"
+- [ ] Update components/TrainMap.tsx: Replace sendToAI with resuming logic, add lastAiCallRef for throttling, integrate throttling in animateTrains, update marker colors based on status
