@@ -18,7 +18,7 @@ app.add_middleware(
     allow_headers=["*"],  # Allows all headers
 )
 
-COLLISION_DISTANCE_METERS = 100  # 100 km for testing collision detection
+COLLISION_DISTANCE_METERS = 100  # 1500 km for easier testing collision detection
 
 class Train(BaseModel):
     name: str

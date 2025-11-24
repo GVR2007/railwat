@@ -43,6 +43,9 @@ function detectCollisionPixel(trainA: any, trainB: any, map: any, thresholdPx = 
 
 // Function to send train positions to AI server
 async function sendToAI(trains: any[], updateTrainStatus: any) {
+  // Log train positions for debugging
+  console.log("Sending trains to AI:", trains.map(t => ({ name: t.name, lat: t.lat, lon: t.lon })));
+
   const trainPayload = {
     trains: trains.map(t => ({
       name: t.name,
@@ -61,11 +64,21 @@ async function sendToAI(trains: any[], updateTrainStatus: any) {
     const decision = await res.json();
     console.log("AI decision:", decision);
 
-    // Apply STOP logic
+    // Apply STOP logic with verbose logs
     decision.forEach((d: any) => {
       if (d.action === "STOP") {
+        console.log(`AI recommends STOP for trains: ${d.affected_trains.join(", ")}`);
         d.affected_trains.forEach((trainName: string) => {
-          updateTrainStatus(trainName, "STOPPED");
+          console.log(`Updating train status to STOPPED for ${trainName}`);
+
+          // Find train id by matching train name, to avoid mismatch
+          const trainObj = trains.find(t => t.name === trainName);
+          if (trainObj) {
+            updateTrainStatus(trainObj.id, "STOPPED");
+            console.log(`Train ${trainName} found with ID ${trainObj.id} - status updated.`);
+          } else {
+            console.warn(`Train named ${trainName} not found in current trains.`);
+          }
         });
       }
     });
