@@ -298,6 +298,13 @@ export default function TrainMap(): React.JSX.Element {
       if (marker) {
         // MapLibre expects [lon, lat]
         marker.setLngLat([lon, lat]);
+
+        // RUNNING → jitter ON
+        if (!isStopped(tr.status)) {
+          const el = marker.getElement();
+          const core = el.querySelector(".train-core");
+          if (core) core.classList.add("jitter");
+        }
       }
     });
 

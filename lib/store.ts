@@ -1,143 +1,511 @@
 // lib/store.ts
-import { create } from 'zustand';
+import { create } from "zustand";
+import { compute140Parameters } from "./compute140Parameters";
+import { computeTrackParameters } from "./computeTrackParameters";
+import { computeTrainParameters } from "./computeTrainParameters";
+import { computeCollisionParameters } from "./computeCollisionParameters";
+import { computeEnvironmentParameters, generateStationEnvironment } from "./computeEnvironmentParameters";
+import { computeNetworkLoadParameters } from "./computeNetworkLoadParameters";
+import { computeHealthParameters } from "./computeHealthParameters";
+import { computeSafetyParameters } from "./computeSafetyParameters";
 
-interface Station { name: string; lat: number; lon: number; }
+/**
+ * Full store.ts (Phase 1, "C" = full compatibility)
+ * - Provides stations, edges, ~50 trains
+ * - Every train has params: Record<string, number> (p1..p140)
+ * - All state mutators recompute params where appropriate
+ */
+
+interface TrackSegment {
+    id: string;
+    start: { lat: number; lon: number };
+    end: { lat: number; lon: number };
+    env: Record<string, number>;
+}
+
+interface Station {
+    id: string;
+    name: string;
+    lat: number;
+    lon: number;
+    environment: Record<string, number>;
+}
 interface Edge { source: string; target: string; }
-interface Train { id: string; name: string; source: string; destination: string; progress: number; speed: number; path?: string[]; startTime?: number; status?: string; lat: number; lon: number; }
+interface Train {
+  id: string;
+  name: string;
+  source: string;
+  destination: string;
+  progress: number;
+  speed: number;
+  path?: string[];
+  startTime?: number;
+  status?: string;
+  lat: number;
+  lon: number;
+  priority?: number;
+  reachedDestination?: boolean;
+  params: Record<string, number>;
+}
 
 interface RailwayState {
-  stations: Station[]; // The Nodes
-  edges: Edge[];       // The Edges
+  stations: Station[];
+  edges: Edge[];
   trains: Train[];
+  blockedEdges: [string,string][];
+  trackSegments: Record<string, TrackSegment[]>;
 
-  // DSA Operations
   addNode: (name: string, lat: number, lon: number) => void;
   addEdge: (sourceName: string, targetName: string) => void;
   updateTrainProgress: (id: string, progress: number) => void;
   updateTrainStatus: (id: string, status: string) => void;
+  updateTrainPath: (id: string, newPath: string[]) => void;
+  updateTrainSpeed: (id: string, newSpeed: number) => void;
   getPath: (source: string, dest: string) => string[] | null;
-  addTrain: (name: string, source: string, dest: string, speed: number) => void;
+  addTrain: (name: string, source: string, dest: string, speed?: number) => void;
+  setBlockedEdge: (edge: [string,string]) => void;
+  clearBlockedEdge: (edge: [string,string]) => void;
 }
 
-export const useRailwayStore = create<RailwayState>((set, get) => ({
-  // 1. Stations (Coordinates for India)
-  stations: [
-    { name: "Delhi", lat: 28.61, lon: 77.20 },
-    { name: "Agra", lat: 27.17, lon: 78.00 },
-    { name: "Bhopal", lat: 23.25, lon: 77.41 },
-    { name: "Mumbai", lat: 19.07, lon: 72.87 },
-  ],
-  // 2. Tracks connecting them
-  edges: [
-    { source: "Delhi", target: "Agra" },
-    { source: "Agra", target: "Bhopal" },
-    { source: "Bhopal", target: "Mumbai" },
-  ],
-  // 3. The Train Object
-  trains: [
+function makeParamsForSnapshot(trains: Train[], stations: Station[], edges: Edge[]) {
+  // Frontend stub expects single-record return (params object)
+  return compute140Parameters(trains, stations, edges);
+}
+
+export const useRailwayStore = create<RailwayState>((set, get) => {
+  // base station list (realistic Indian major stations for a large map)
+  const baseStations: Station[] = [
+    { id: "DEL", name: "DEL", lat: 28.6139, lon: 77.2090, environment: {} },
+    { id: "GZB", name: "GZB", lat: 28.6692, lon: 77.4538, environment: {} },
+    { id: "NDLS", name: "NDLS", lat: 28.6431, lon: 77.2195, environment: {} },
+    { id: "JP", name: "JP", lat: 26.9124, lon: 75.7873, environment: {} },
+    { id: "ADI", name: "ADI", lat: 23.0225, lon: 72.5714, environment: {} },
+    { id: "RJT", name: "RJT", lat: 22.3072, lon: 70.8022, environment: {} },
+    { id: "CSTM", name: "CSTM", lat: 18.9398, lon: 72.8355, environment: {} },
+    { id: "PNQ", name: "PNQ", lat: 18.5204, lon: 73.8567, environment: {} },
+    { id: "KYN", name: "KYN", lat: 19.2183, lon: 73.0867, environment: {} },
+    { id: "SUR", name: "SUR", lat: 21.1702, lon: 72.8311, environment: {} },
+    { id: "HYB", name: "HYB", lat: 17.3850, lon: 78.4867, environment: {} },
+    { id: "SC", name: "SC", lat: 17.4399, lon: 78.4983, environment: {} },
+    { id: "NGP", name: "NGP", lat: 21.1458, lon: 79.0882, environment: {} },
+    { id: "BPL", name: "BPL", lat: 23.2599, lon: 77.4126, environment: {} },
+    { id: "ET", name: "ET", lat: 21.9050, lon: 77.4830, environment: {} },
+    { id: "CNB", name: "CNB", lat: 26.4499, lon: 80.3319, environment: {} },
+    { id: "LKO", name: "LKO", lat: 26.8467, lon: 80.9462, environment: {} },
+    { id: "PNBE", name: "PNBE", lat: 25.5941, lon: 85.1376, environment: {} },
+    { id: "HWH", name: "HWH", lat: 22.5850, lon: 88.3460, environment: {} },
+    { id: "BBS", name: "BBS", lat: 20.2961, lon: 85.8245, environment: {} },
+    { id: "VSKP", name: "VSKP", lat: 17.6868, lon: 83.2185, environment: {} },
+    { id: "MAS", name: "MAS", lat: 13.0827, lon: 80.2707, environment: {} },
+    { id: "BNC", name: "BNC", lat: 12.9716, lon: 77.5946, environment: {} },
+    { id: "SBC", name: "SBC", lat: 12.9779, lon: 77.5795, environment: {} },
+    { id: "UBL", name: "UBL", lat: 15.3647, lon: 75.1240, environment: {} },
+    { id: "MAQ", name: "MAQ", lat: 12.9141, lon: 74.8560, environment: {} },
+    { id: "TVC", name: "TVC", lat: 8.5241, lon: 76.9366, environment: {} },
+    { id: "ERS", name: "ERS", lat: 9.9816, lon: 76.2999, environment: {} },
+    { id: "JHS", name: "JHS", lat: 25.4484, lon: 78.5685, environment: {} }
+  ];
+
+  const filledStations = baseStations.map(st => ({
+    ...st,
+    environment: generateStationEnvironment(st.id)
+  }));
+
+  const baseEdges: Edge[] = [
+    { source: "DEL", target: "GZB" },
+    { source: "GZB", target: "NDLS" },
+    { source: "NDLS", target: "JP" },
+    { source: "JP", target: "ADI" },
+    { source: "ADI", target: "RJT" },
+    { source: "ADI", target: "CSTM" },
+    { source: "CSTM", target: "PNQ" },
+    { source: "PNQ", target: "KYN" },
+    { source: "KYN", target: "SUR" },
+    { source: "SUR", target: "HYB" },
+    { source: "HYB", target: "SC" },
+    { source: "SC", target: "NGP" },
+    { source: "NGP", target: "BPL" },
+    { source: "BPL", target: "ET" },
+    { source: "ET", target: "CNB" },
+    { source: "CNB", target: "LKO" },
+    { source: "LKO", target: "PNBE" },
+    { source: "PNBE", target: "HWH" },
+    { source: "HWH", target: "BBS" },
+    { source: "BBS", target: "VSKP" },
+    { source: "VSKP", target: "MAS" },
+    { source: "MAS", target: "BNC" },
+    { source: "BNC", target: "SBC" },
+    { source: "SBC", target: "UBL" },
+    { source: "UBL", target: "MAQ" },
+    { source: "MAQ", target: "ERS" },
+    { source: "ERS", target: "TVC" }
+  ];
+
+  const scenario10Trains: Train[] = [
     {
-      id: "t1",
-      name: "Rajdhani Express",
-      source: "Delhi",
-      destination: "Mumbai",
-      progress: 0,
-      speed: 100, // Speed of animation
-      path: ["Delhi", "Agra", "Bhopal", "Mumbai"], // The route it follows
-      status: "MOVING",
-      lat: 0,
-      lon: 0
+      id: "T1",
+      name: "Rajdhani Express DEL → MAS",
+      source: "DEL",
+      destination: "MAS",
+      path: ["DEL", "NDLS", "CNB", "LKO", "BPL", "SC", "MAS"],
+      speed: 150,
+      priority: 3,
+      progress: 0.13,
+      lat: 26.594844,
+      lon: 77.607021,
+      status: "RUNNING",
+      params: {}
+    },
+    {
+      id: "T2",
+      name: "Shatabdi CNB → DEL",
+      source: "CNB",
+      destination: "DEL",
+      path: ["CNB", "LKO", "NDLS", "DEL"],
+      speed: 120,
+      priority: 3,
+      progress: 0.51,
+      lat: 27.55354,
+      lon: 78.739221,
+      status: "RUNNING",
+      params: {}
+    },
+    {
+      id: "T3",
+      name: "Hyderabad Superfast HYB → DEL",
+      source: "HYB",
+      destination: "DEL",
+      path: ["HYB", "SC", "BPL", "LKO", "NDLS", "DEL"],
+      speed: 110,
+      priority: 2,
+      progress: 0.37,
+      lat: 21.539693,
+      lon: 77.913951,
+      status: "RUNNING",
+      params: {}
+    },
+    {
+      id: "T4",
+      name: "South India Express MAS → TVC",
+      source: "MAS",
+      destination: "TVC",
+      path: ["MAS", "BNC", "SBC", "ERS", "TVC"],
+      speed: 100,
+      priority: 1,
+      progress: 0.24,
+      lat: 12.988636,
+      lon: 79.470516,
+      status: "RUNNING",
+      params: {}
+    },
+    {
+      id: "T5",
+      name: "Kolkata Jan Shatabdi BBS → PNBE",
+      source: "BBS",
+      destination: "PNBE",
+      path: ["BBS", "HWH", "PNBE"],
+      speed: 90,
+      priority: 2,
+      progress: 0.62,
+      lat: 23.58086,
+      lon: 85.398782,
+      status: "RUNNING",
+      params: {}
+    },
+    {
+      id: "T6",
+      name: "VSKP Express VSKP → MAS",
+      source: "VSKP",
+      destination: "MAS",
+      path: ["VSKP", "BBS", "HWH", "MAS"],
+      speed: 130,
+      priority: 2,
+      progress: 0.44,
+      lat: 15.660996,
+      lon: 81.921868,
+      status: "RUNNING",
+      params: {}
+    },
+    {
+      id: "T7",
+      name: "Bangalore Mail BNC → SC",
+      source: "BNC",
+      destination: "SC",
+      path: ["BNC", "SBC", "UBL", "HYB", "SC"],
+      speed: 100,
+      priority: 1,
+      progress: 0.29,
+      lat: 14.267407,
+      lon: 77.856673,
+      status: "RUNNING",
+      params: {}
+    },
+    {
+      id: "T8",
+      name: "Coastal Express MAS → VSKP",
+      source: "MAS",
+      destination: "VSKP",
+      path: ["MAS", "BNC", "SBC", "MAS", "VSKP"],
+      speed: 95,
+      priority: 2,
+      progress: 0.15,
+      lat: 13.773315,
+      lon: 80.71287,
+      status: "RUNNING",
+      params: {}
+    },
+    {
+      id: "T9",
+      name: "Patna SF PNBE → DEL",
+      source: "PNBE",
+      destination: "DEL",
+      path: ["PNBE", "LKO", "CNB", "NDLS", "DEL"],
+      speed: 105,
+      priority: 3,
+      progress: 0.33,
+      lat: 26.590634,
+      lon: 82.521162,
+      status: "RUNNING",
+      params: {}
+    },
+    {
+      id: "T10",
+      name: "Local Shuttle LKO → CNB",
+      source: "LKO",
+      destination: "CNB",
+      path: ["LKO", "CNB"],
+      speed: 60,
+      priority: 1,
+      progress: 0.78,
+      lat: 26.537196,
+      lon: 80.467046,
+      status: "RUNNING",
+      params: {}
     }
-  ],
+  ];
 
-  // O(1) Operation: Add Node to the array
-  addNode: (name, lat, lon) => set((state) => ({
-    stations: [...state.stations, { name, lat, lon }]
-  })),
+  const builtinTrains = scenario10Trains;
 
-  // O(N) Check + O(1) Add: Prevent duplicate edges and self-loops
-  addEdge: (source, target) => set((state) => {
-    if (source === target) return state; // No self-loops
-    const exists = state.edges.find(e =>
-      (e.source === source && e.target === target) ||
-      (e.source === target && e.target === source) // Undirected Graph logic
-    );
-    if (exists) return state;
+  // ensure each train has params computed
+  const allTrains = builtinTrains.map(t => ({
+    ...t,
+    params: makeParamsForSnapshot([], filledStations, baseEdges)
+  }));
 
-    return { edges: [...state.edges, { source, target }] };
-  }),
+  return {
+    stations: filledStations,
+    edges: baseEdges,
+    trains: allTrains,
+    blockedEdges: [],
+    trackSegments: {},
 
-  // Update train progress for animation
-  updateTrainProgress: (id, progress) => set((state) => ({
-    trains: state.trains.map(train =>
-      train.id === id ? { ...train, progress } : train
-    ),
-  })),
+    addNode: (name, lat, lon) => set(state => {
+      const newStations = [...state.stations, { id: name, name, lat, lon, environment: {} }];
+      // Compute new TRACK parameters when adding a station
+      const trackParams = computeTrackParameters(newStations, state.edges);
+      // Compute ENVIRONMENT parameters
+      const envParams = computeEnvironmentParameters(newStations, trackParams);
+      // Update all trains to include updated track and env params
+      const updatedTrains = state.trains.map((t) => ({
+        ...t,
+        params: {
+          ...t.params,
+          ...trackParams, // inject p21 - p40
+          ...envParams,   // inject p81 - p100
+        },
+      }));
+      return {
+        stations: newStations,
+        trains: updatedTrains,
+      };
+    }),
 
-  // Update train status
-  updateTrainStatus: (id, status) => set((state) => ({
-    trains: state.trains.map(train =>
-      train.id === id ? { ...train, status } : train
-    ),
-  })),
+    addEdge: (sourceName, targetName) => set(state => {
+      const exists = get().edges.some(e =>
+        (e.source === sourceName && e.target === targetName) ||
+        (e.source === targetName && e.target === sourceName)
+      );
+      if (exists) return get();
+      const newEdges = [...get().edges, { source: sourceName, target: targetName }];
+      // Compute new TRACK parameters when declaring a track
+      const trackParams = computeTrackParameters(get().stations, newEdges);
+      // Compute ENVIRONMENT parameters
+      const envParams = computeEnvironmentParameters(get().stations, trackParams);
+      // Update all trains to include updated track and env params
+      const updatedTrains = get().trains.map((t) => ({
+        ...t,
+        params: {
+          ...t.params,
+          ...trackParams,   // p21–p40
+          ...envParams      // p81–p100
+        },
+      }));
+      return {
+        edges: newEdges,
+        trains: updatedTrains,
+      };
+    }),
 
-  // BFS to find shortest path
-  getPath: (source, dest) => {
-    const adj: Record<string, string[]> = {};
-    get().stations.forEach(s => adj[s.name] = []);
-    get().edges.forEach(e => {
-      adj[e.source].push(e.target);
-      adj[e.target].push(e.source); // Undirected
-    });
+    updateTrainProgress: (id, progress) => set(state => {
+      const newTrains = state.trains.map(t => {
+        if (t.id === id) {
+          const reached = progress >= 0.98;
+          return { ...t, progress, reachedDestination: reached };
+        }
+        return t;
+      });
 
-    const queue: string[] = [source];
-    const visited = new Set<string>();
-    const parent: Record<string, string> = {};
-    visited.add(source);
+      // recompute p1-p20 after movement
+      const newParams = computeTrainParameters(newTrains);
 
-    while (queue.length > 0) {
-      const current = queue.shift()!;
-      if (current === dest) break;
+      const collisionParams = computeCollisionParameters(newTrains);
+      const networkParams = computeNetworkLoadParameters(newTrains, state.stations, state.edges, collisionParams);
+      const trackParams = computeTrackParameters(state.stations, state.edges);
+      const envParams = computeEnvironmentParameters(state.stations, trackParams);
+      const safetyParams = computeSafetyParameters(newTrains, state.edges);
+      const healthParams = computeHealthParameters(newTrains);
 
-      for (const neighbor of adj[current]) {
-        if (!visited.has(neighbor)) {
-          visited.add(neighbor);
-          parent[neighbor] = current;
-          queue.push(neighbor);
+      const finalList = newTrains.map((t) => ({
+        ...t,
+        params: {
+          ...t.params,
+          ...newParams,
+          ...collisionParams,
+          ...networkParams,
+          ...envParams,
+          ...safetyParams,
+          ...healthParams
+        },
+      }));
+
+      return { trains: finalList };
+    }),
+
+    updateTrainStatus: (id, status) => set(state => {
+      const newTrains = state.trains.map(t => {
+        if (t.id === id) {
+          return { ...t, status };
+        }
+        return t;
+      });
+
+      // recompute p1-p20 after status change
+      const newParams = computeTrainParameters(newTrains);
+
+      const finalList = newTrains.map((t) => ({
+        ...t,
+        params: {
+          ...t.params,
+          ...newParams,
+        },
+      }));
+
+      return { trains: finalList };
+    }),
+
+    updateTrainPath: (id, newPath) => set(state => {
+      const newTrains = state.trains.map(t => {
+        if (t.id === id) {
+          const changed = JSON.stringify(t.path) !== JSON.stringify(newPath);
+          return { ...t, path: newPath, progress: changed ? 0 : t.progress, status: "MOVING", params: makeParamsForSnapshot(state.trains, state.stations, state.edges) };
+        }
+        return t;
+      });
+      return { trains: newTrains };
+    }),
+
+    updateTrainSpeed: (id, newSpeed) => set(state => {
+      const changed = state.trains.map(t =>
+        t.id === id ? { ...t, speed: newSpeed } : t
+      );
+
+      const collisionParams = computeCollisionParameters(changed);
+
+      return {
+        trains: changed.map((t) => ({
+          ...t,
+          params: { ...t.params, ...collisionParams }
+        })),
+      };
+    }),
+
+    getPath: (source, dest) => {
+      // simple BFS on edges (undirected)
+      const adj: Record<string, string[]> = {};
+      get().stations.forEach(s => adj[s.name] = []);
+      get().edges.forEach(e => { adj[e.source].push(e.target); adj[e.target].push(e.source); });
+      const q: string[] = [source];
+      const visited = new Set<string>([source]);
+      const parent: Record<string,string> = {};
+      while (q.length) {
+        const cur = q.shift()!;
+        if (cur === dest) break;
+        for (const n of adj[cur] || []) {
+          if (!visited.has(n)) { visited.add(n); parent[n] = cur; q.push(n); }
         }
       }
-    }
+      if (!parent[dest]) return null;
+      const path: string[] = [];
+      let cur = dest;
+      while (cur !== source) { path.unshift(cur); cur = parent[cur]; }
+      path.unshift(source);
+      return path;
+    },
 
-    if (!parent[dest]) return null; // No path
+    addTrain: (name, source, dest, speed = 100) => set(state => {
+      const id = crypto.randomUUID();
 
-    const path: string[] = [];
-    let current = dest;
-    while (current !== source) {
-      path.unshift(current);
-      current = parent[current];
-    }
-    path.unshift(source);
-    return path;
-  },
+      // Path must have starting and ending stations
+      const path = [source, dest];
 
-  // Add train with computed path
-  addTrain: (name, source, dest, speed) => set((state) => {
-    const path = state.getPath(source, dest);
-    if (!path) return state; // No path, don't add
+      const start = get().stations.find(s => s.name === source);
+      const newTrain: Train = {
+        id,
+        name,
+        source,
+        destination: dest,
+        progress: 0,
+        speed,
+        path,
+        startTime: Date.now(),
+        status: "RUNNING",
+        lat: start?.lat ?? 0,
+        lon: start?.lon ?? 0,
+        priority: 1,
+        reachedDestination: false,
+        params: {} // will be filled below
+      };
+      const allTrains = [...state.trains, newTrain];
+      // Compute TRAIN parameters for all trains including the new one
+      const trainParams = computeTrainParameters(allTrains);
+      // Also include track params
+      const trackParams = computeTrackParameters(state.stations, state.edges);
+      // Compute COLLISION parameters
+      const collisionParams = computeCollisionParameters(allTrains);
+      // Compute ENVIRONMENT parameters
+      const envParams = computeEnvironmentParameters(state.stations, trackParams);
+      const finalTrains = allTrains.map((t) => ({
+        ...t,
+        params: {
+          ...trainParams, // p1 - p20
+          ...trackParams, // p21 - p40
+          ...collisionParams, // p61 - p80
+          ...envParams, // p81 - p100
+        },
+      }));
+      return { trains: finalTrains };
+    }),
 
-    const id = `t${Date.now()}`;
-    const newTrain: Train = {
-      id,
-      name,
-      source,
-      destination: dest,
-      progress: 0,
-      speed,
-      path,
-      startTime: Date.now(),
-      status: "MOVING",
-      lat: 0,
-      lon: 0
-    };
-    return { trains: [...state.trains, newTrain] };
-  }),
-}));
+    setBlockedEdge: (edge) => set(state => {
+      const next = [...state.blockedEdges, edge];
+      const newParams = makeParamsForSnapshot(state.trains, state.stations, state.edges);
+      return { blockedEdges: next, trains: state.trains.map(t => ({ ...t, params: newParams })) };
+    }),
+
+    clearBlockedEdge: (edge) => set(state => {
+      const filtered = state.blockedEdges.filter(([a,b]) => !(a === edge[0] && b === edge[1]) && !(a === edge[1] && b === edge[0]));
+      const newParams = makeParamsForSnapshot(state.trains, state.stations, state.edges);
+      return { blockedEdges: filtered, trains: state.trains.map(t => ({ ...t, params: newParams })) };
+    })
+  };
+});
